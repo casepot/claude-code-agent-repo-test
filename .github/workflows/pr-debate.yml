@@ -191,6 +191,7 @@ jobs:
   stakeholder-analysis:
     name: Stakeholder Analysis
     needs: [check-trigger, prepare-context]
+    if: needs.check-trigger.outputs.should_debate == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -231,6 +232,7 @@ jobs:
   collect-arguments:
     name: Collect Stakeholder Arguments
     needs: [check-trigger, stakeholder-analysis]
+    if: needs.check-trigger.outputs.should_debate == 'true'
     runs-on: ubuntu-latest
     outputs:
       arguments_summary: ${{ steps.collect.outputs.summary }}
@@ -268,6 +270,7 @@ jobs:
   maintainer-deliberation:
     name: Maintainer Deliberation
     needs: [check-trigger, prepare-context, collect-arguments]
+    if: needs.check-trigger.outputs.should_debate == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -306,6 +309,7 @@ jobs:
   consensus-decision:
     name: Consensus Decision
     needs: [check-trigger, prepare-context, maintainer-deliberation]
+    if: needs.check-trigger.outputs.should_debate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
