@@ -202,17 +202,16 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Run stakeholder analysis
-        uses: anthropics/claude-code-action@main
+        uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          direct_prompt: |
-            You are the ${{ matrix.stakeholder }} stakeholder reviewing PR #${{ needs.check-trigger.outputs.pr_number }}.
-            Your role is to analyze the pull request based on the guidelines in `.github/claude/prompts/stakeholders/${{ matrix.stakeholder }}.md`.
+          prompt: |
+            You are analyzing PR #${{ needs.check-trigger.outputs.pr_number }} as the ${{ matrix.stakeholder }} stakeholder.
             
-            Here is the context for the pull request:
             ${{ needs.prepare-context.outputs.context }}
             
-            Please provide your analysis in Markdown format.
+            Provide your analysis following your role's guidelines.
+          prompt_file: .github/claude/prompts/stakeholders/${{ matrix.stakeholder }}.md
           max_turns: "1"
           
       - name: Post stakeholder comment
@@ -280,20 +279,20 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Run maintainer review
-        uses: anthropics/claude-code-action@main
+        uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          direct_prompt: |
-            You are the ${{ matrix.maintainer }} maintainer reviewing PR #${{ needs.check-trigger.outputs.pr_number }}.
-            Your role is to synthesize the stakeholder feedback and provide a final decision based on the guidelines in `.github/claude/prompts/maintainers/${{ matrix.maintainer }}.md`.
+          prompt: |
+            You are reviewing PR #${{ needs.check-trigger.outputs.pr_number }} as the ${{ matrix.maintainer }} maintainer.
             
-            ## Original PR Context
+            ## Original Context
             ${{ needs.prepare-context.outputs.context }}
             
             ## Stakeholder Arguments
             ${{ needs.collect-arguments.outputs.arguments_summary }}
             
-            Please provide your final analysis and decision in Markdown format.
+            Synthesize the stakeholder feedback and provide your maintainer perspective.
+          prompt_file: .github/claude/prompts/maintainers/${{ matrix.maintainer }}.md
           max_turns: "1"
           
       - name: Save maintainer decision
