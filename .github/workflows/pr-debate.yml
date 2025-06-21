@@ -1,0 +1,381 @@
+name: Multi-Agent PR Debate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to analyze'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: write
+
+jobs:
+  check-trigger:
+    name: Check Debate Trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should_debate: ${{ steps.check.outputs.should_debate }}
+      pr_number: ${{ steps.check.outputs.pr_number }}
+      debate_id: ${{ steps.check.outputs.debate_id }}
+    steps:
+      - name: Check trigger conditions
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const context = github.context;
+            let shouldDebate = false;
+            let prNumber = null;
+            
+            // Check for manual workflow dispatch
+            if (context.eventName === 'workflow_dispatch') {
+              shouldDebate = true;
+              prNumber = context.payload.inputs.pr_number;
+            }
+            // Check for PR events
+            else if (context.eventName === 'pull_request') {
+              prNumber = context.payload.pull_request.number;
+              
+              // Check if labeled with 'needs-debate'
+              const labels = context.payload.pull_request.labels || [];
+              if (labels.some(l => l.name === 'needs-debate')) {
+                shouldDebate = true;
+              }
+              
+              // Auto-trigger for large changes
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              
+              if (pr.additions + pr.deletions > 500) {
+                console.log('Large PR detected, triggering debate');
+                shouldDebate = true;
+              }
+            }
+            // Check for comment trigger
+            else if (context.eventName === 'issue_comment') {
+              const comment = context.payload.comment.body;
+              if (comment.startsWith('/debate')) {
+                shouldDebate = true;
+                prNumber = context.payload.issue.number;
+              }
+            }
+            
+            // Generate debate ID
+            const debateId = shouldDebate ? `debate-${prNumber}-${Date.now()}` : '';
+            
+            core.setOutput('should_debate', shouldDebate);
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('debate_id', debateId);
+
+  prepare-context:
+    name: Prepare Debate Context
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_debate == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      context: ${{ steps.build.outputs.context }}
+      participants: ${{ steps.identify.outputs.participants }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Build context
+        id: build
+        run: |
+          PR_NUMBER=${{ needs.check-trigger.outputs.pr_number }}
+          
+          # Get PR diff
+          gh pr diff $PR_NUMBER > /tmp/pr.diff
+          
+          # Get PR metadata
+          gh pr view $PR_NUMBER --json title,body,author,labels,files > /tmp/pr-meta.json
+          
+          # Get recent commit messages
+          gh pr view $PR_NUMBER --json commits --jq '.commits[-5:][].commit.message' > /tmp/commits.txt
+          
+          # Build context file
+          cat > /tmp/context.md << 'EOF'
+          # PR Context
+          
+          ## Metadata
+          $(cat /tmp/pr-meta.json | jq -r '"Title: \(.title)\nAuthor: \(.author.login)\nLabels: \(.labels[].name // "none")"')
+          
+          ## Changed Files
+          $(cat /tmp/pr-meta.json | jq -r '.files[].path')
+          
+          ## Recent Commits
+          $(cat /tmp/commits.txt)
+          
+          ## Diff Summary
+          $(head -n 500 /tmp/pr.diff)
+          EOF
+          
+          # Output context
+          echo "context<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/context.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Identify participants
+        id: identify
+        run: |
+          # Analyze changed files to determine which agents should participate
+          CHANGED_FILES=$(gh pr view ${{ needs.check-trigger.outputs.pr_number }} --json files --jq '.files[].path')
+          
+          # Default stakeholders
+          STAKEHOLDERS='["security_analyst", "performance_analyst", "testing_advocate"]'
+          
+          # Add specialized stakeholders based on changes
+          if echo "$CHANGED_FILES" | grep -E '\.(md|txt|rst)$'; then
+            STAKEHOLDERS=$(echo $STAKEHOLDERS | jq '. + ["documentation"]')
+          fi
+          
+          if echo "$CHANGED_FILES" | grep -E 'api/|interface/'; then
+            STAKEHOLDERS=$(echo $STAKEHOLDERS | jq '. + ["ux", "compatibility"]')
+          fi
+          
+          # Identify relevant maintainers
+          MAINTAINERS='["architecture", "quality"]'
+          
+          if echo "$CHANGED_FILES" | grep -E 'auth|security|crypto'; then
+            MAINTAINERS=$(echo $MAINTAINERS | jq '. + ["security"]')
+          fi
+          
+          if echo "$CHANGED_FILES" | grep -E 'perf|benchmark|optimize'; then
+            MAINTAINERS=$(echo $MAINTAINERS | jq '. + ["performance"]')
+          fi
+          
+          echo "participants={\"stakeholders\": $STAKEHOLDERS, \"maintainers\": $MAINTAINERS}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  stakeholder-analysis:
+    name: Stakeholder Analysis
+    needs: [check-trigger, prepare-context]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stakeholder: ${{ fromJSON(needs.prepare-context.outputs.participants).stakeholders }}
+      max-parallel: 5
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run stakeholder analysis
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are analyzing PR #${{ needs.check-trigger.outputs.pr_number }} as the ${{ matrix.stakeholder }} stakeholder.
+            
+            ${{ needs.prepare-context.outputs.context }}
+            
+            Provide your analysis following your role's guidelines.
+          prompt_file: .github/claude/prompts/stakeholders/${{ matrix.stakeholder }}.md
+          output_format: markdown
+          max_turns: 1
+          
+      - name: Post stakeholder comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const analysis = process.env.CLAUDE_OUTPUT;
+            const stakeholder = '${{ matrix.stakeholder }}';
+            const debateId = '${{ needs.check-trigger.outputs.debate_id }}';
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.pr_number }},
+              body: `## 🤖 ${stakeholder} Analysis\n\n_Debate ID: ${debateId}_\n\n${analysis}`
+            });
+
+  collect-arguments:
+    name: Collect Stakeholder Arguments
+    needs: [check-trigger, stakeholder-analysis]
+    runs-on: ubuntu-latest
+    outputs:
+      arguments_summary: ${{ steps.collect.outputs.summary }}
+    steps:
+      - name: Collect all stakeholder comments
+        id: collect
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ needs.check-trigger.outputs.pr_number }};
+            const debateId = '${{ needs.check-trigger.outputs.debate_id }}';
+            
+            // Get all comments from this debate
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+            
+            // Filter for stakeholder comments from this debate
+            const stakeholderComments = comments.filter(c => 
+              c.body.includes(debateId) && 
+              c.body.includes('🤖') &&
+              c.body.includes('Analysis')
+            );
+            
+            // Build summary
+            let summary = '# Stakeholder Arguments Summary\n\n';
+            for (const comment of stakeholderComments) {
+              summary += comment.body + '\n\n---\n\n';
+            }
+            
+            core.setOutput('summary', summary);
+
+  maintainer-deliberation:
+    name: Maintainer Deliberation
+    needs: [check-trigger, prepare-context, collect-arguments]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        maintainer: ${{ fromJSON(needs.prepare-context.outputs.participants).maintainers }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run maintainer review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are reviewing PR #${{ needs.check-trigger.outputs.pr_number }} as the ${{ matrix.maintainer }} maintainer.
+            
+            ## Original Context
+            ${{ needs.prepare-context.outputs.context }}
+            
+            ## Stakeholder Arguments
+            ${{ needs.collect-arguments.outputs.arguments_summary }}
+            
+            Synthesize the stakeholder feedback and provide your maintainer perspective.
+          prompt_file: .github/claude/prompts/maintainers/${{ matrix.maintainer }}.md
+          output_format: markdown
+          max_turns: 1
+          
+      - name: Save maintainer decision
+        run: |
+          echo "$CLAUDE_OUTPUT" > /tmp/maintainer-${{ matrix.maintainer }}.md
+          
+      - name: Upload decision artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintainer-decision-${{ matrix.maintainer }}
+          path: /tmp/maintainer-${{ matrix.maintainer }}.md
+
+  consensus-decision:
+    name: Consensus Decision
+    needs: [check-trigger, maintainer-deliberation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all maintainer decisions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: maintainer-decision-*
+          merge-multiple: true
+          path: /tmp/decisions
+          
+      - name: Calculate consensus
+        id: consensus
+        run: |
+          # Parse maintainer decisions and calculate weighted consensus
+          # This is simplified - real implementation would parse structured decisions
+          
+          APPROVE_COUNT=0
+          REJECT_COUNT=0
+          MODIFY_COUNT=0
+          
+          for decision in /tmp/decisions/*.md; do
+            if grep -qi "APPROVE" "$decision"; then
+              APPROVE_COUNT=$((APPROVE_COUNT + 1))
+            elif grep -qi "REJECT" "$decision"; then
+              REJECT_COUNT=$((REJECT_COUNT + 1))
+            else
+              MODIFY_COUNT=$((MODIFY_COUNT + 1))
+            fi
+          done
+          
+          TOTAL=$((APPROVE_COUNT + REJECT_COUNT + MODIFY_COUNT))
+          
+          if [ $TOTAL -eq 0 ]; then
+            echo "decision=no_consensus" >> $GITHUB_OUTPUT
+            echo "consensus_score=0" >> $GITHUB_OUTPUT
+          else
+            CONSENSUS_SCORE=$((APPROVE_COUNT * 100 / TOTAL))
+            echo "consensus_score=$CONSENSUS_SCORE" >> $GITHUB_OUTPUT
+            
+            if [ $CONSENSUS_SCORE -ge 80 ]; then
+              echo "decision=approve" >> $GITHUB_OUTPUT
+            elif [ $CONSENSUS_SCORE -ge 50 ]; then
+              echo "decision=modify" >> $GITHUB_OUTPUT
+            else
+              echo "decision=reject" >> $GITHUB_OUTPUT
+            fi
+          fi
+          
+      - name: Post final decision
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const decision = '${{ steps.consensus.outputs.decision }}';
+            const score = '${{ steps.consensus.outputs.consensus_score }}';
+            const debateId = '${{ needs.check-trigger.outputs.debate_id }}';
+            
+            let emoji = '❓';
+            let status = 'pending';
+            
+            switch(decision) {
+              case 'approve':
+                emoji = '✅';
+                status = 'success';
+                break;
+              case 'reject':
+                emoji = '❌';
+                status = 'failure';
+                break;
+              case 'modify':
+                emoji = '🔧';
+                status = 'pending';
+                break;
+            }
+            
+            const body = `## ${emoji} Debate Conclusion
+            
+            **Debate ID**: ${debateId}
+            **Decision**: ${decision.toUpperCase()}
+            **Consensus Score**: ${score}%
+            
+            The multi-agent review has completed. Please review the feedback above and make necessary adjustments.`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.pr_number }},
+              body: body
+            });
+            
+            // Update PR status check
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: status,
+              context: 'agent-debate',
+              description: `Consensus: ${score}% - ${decision}`
+            });

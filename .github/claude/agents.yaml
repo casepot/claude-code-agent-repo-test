@@ -1,0 +1,274 @@
+# Agent Configuration Registry
+# This file defines all agents in the system, their roles, and capabilities
+
+defaults: &defaults
+  provider: anthropic
+  model: claude-code-4o
+  temperature: 0.4
+  max_tokens: 1500
+  timeout: 300
+  retry_attempts: 3
+  
+maintainers:
+  core:
+    <<: *defaults
+    model: claude-opus-4
+    temperature: 0.2
+    max_tokens: 2000
+    role: "Core Maintainer - Final Arbiter"
+    prompt: .github/claude/prompts/maintainers/core.md
+    domains:
+      - "*"  # Authority over entire codebase
+    capabilities:
+      - final_decision
+      - override_consensus
+      - set_policy
+    decision_weight: 5.0
+    
+  architecture:
+    <<: *defaults
+    temperature: 0.3
+    role: "Architecture Maintainer"
+    prompt: .github/claude/prompts/maintainers/architecture.md
+    domains:
+      - "src/core/**"
+      - "src/api/**"
+      - "docs/architecture/**"
+    capabilities:
+      - approve_design_changes
+      - enforce_patterns
+      - review_dependencies
+    decision_weight: 3.0
+    
+  security:
+    <<: *defaults
+    temperature: 0.25
+    role: "Security Maintainer"
+    prompt: .github/claude/prompts/maintainers/security.md
+    domains:
+      - "src/auth/**"
+      - "src/security/**"
+      - "**/*crypto*"
+      - "**/*auth*"
+    capabilities:
+      - security_veto
+      - approve_security_changes
+      - mandate_security_review
+    decision_weight: 3.0
+    
+  performance:
+    <<: *defaults
+    temperature: 0.35
+    role: "Performance Maintainer"
+    prompt: .github/claude/prompts/maintainers/performance.md
+    domains:
+      - "src/optimization/**"
+      - "benchmarks/**"
+      - "**/perf/**"
+    capabilities:
+      - approve_performance_changes
+      - mandate_benchmarks
+      - set_performance_targets
+    decision_weight: 3.0
+    
+  quality:
+    <<: *defaults
+    model: claude-code-4o-mini  # Can use smaller model
+    temperature: 0.3
+    role: "Quality Maintainer"
+    prompt: .github/claude/prompts/maintainers/quality.md
+    domains:
+      - "tests/**"
+      - "docs/**"
+      - ".github/**"
+    capabilities:
+      - enforce_standards
+      - approve_test_changes
+      - mandate_documentation
+    decision_weight: 3.0
+
+stakeholders:
+  ux:
+    <<: *defaults
+    temperature: 0.5
+    role: "User Experience Stakeholder"
+    prompt: .github/claude/prompts/stakeholders/ux.md
+    focus_areas:
+      - api_design
+      - developer_experience
+      - documentation_clarity
+      - error_messages
+    debate_weight: 1.0
+    
+  security_analyst:
+    <<: *defaults
+    temperature: 0.35
+    role: "Security Analysis Stakeholder"
+    prompt: .github/claude/prompts/stakeholders/security.md
+    focus_areas:
+      - vulnerability_detection
+      - attack_surface_analysis
+      - security_best_practices
+      - dependency_scanning
+    debate_weight: 1.5  # Higher weight for security concerns
+    
+  performance_analyst:
+    <<: *defaults
+    model: claude-code-4o-mini  # Faster for metrics analysis
+    temperature: 0.4
+    role: "Performance Analysis Stakeholder"
+    prompt: .github/claude/prompts/stakeholders/performance.md
+    focus_areas:
+      - complexity_analysis
+      - resource_usage
+      - scalability_concerns
+      - optimization_opportunities
+    debate_weight: 1.0
+    
+  testing_advocate:
+    <<: *defaults
+    temperature: 0.45
+    role: "Testing Stakeholder"
+    prompt: .github/claude/prompts/stakeholders/testing.md
+    focus_areas:
+      - test_coverage
+      - edge_cases
+      - regression_risks
+      - test_maintainability
+    debate_weight: 1.0
+    
+  compatibility:
+    <<: *defaults
+    temperature: 0.3
+    role: "Compatibility Stakeholder"
+    prompt: .github/claude/prompts/stakeholders/compatibility.md
+    focus_areas:
+      - breaking_changes
+      - api_stability
+      - migration_paths
+      - deprecation_handling
+    debate_weight: 1.2
+    
+  documentation:
+    <<: *defaults
+    model: claude-code-4o-mini
+    temperature: 0.5
+    role: "Documentation Stakeholder"
+    prompt: .github/claude/prompts/stakeholders/documentation.md
+    focus_areas:
+      - code_comments
+      - api_documentation
+      - readme_updates
+      - example_code
+    debate_weight: 0.8
+
+# Special purpose agents
+special_agents:
+  emergency_responder:
+    <<: *defaults
+    model: claude-opus-4
+    temperature: 0.1
+    role: "Emergency Response Agent"
+    prompt: .github/claude/prompts/special/emergency.md
+    activation:
+      - security_vulnerability
+      - production_outage
+      - data_corruption_risk
+    capabilities:
+      - fast_track_approval
+      - bypass_normal_process
+      - immediate_escalation
+      
+  cost_analyzer:
+    <<: *defaults
+    model: claude-code-4o-mini
+    temperature: 0.3
+    role: "Cost Analysis Agent"
+    prompt: .github/claude/prompts/special/cost.md
+    activation:
+      - token_budget_exceeded
+      - high_debate_volume
+    capabilities:
+      - recommend_optimizations
+      - adjust_agent_parameters
+      
+# Debate configuration
+debate_config:
+  phases:
+    evidence_gathering:
+      duration: 300  # 5 minutes
+      parallel: true
+      
+    opening_arguments:
+      duration: 600  # 10 minutes
+      parallel: true
+      max_tokens_per_argument: 500
+      
+    rebuttals:
+      duration: 600  # 10 minutes
+      parallel: false
+      max_rebuttals_per_agent: 2
+      max_tokens_per_rebuttal: 300
+      
+    clarification:
+      duration: 300  # 5 minutes
+      parallel: true
+      max_questions_per_agent: 3
+      
+    final_arguments:
+      duration: 300  # 5 minutes
+      parallel: true
+      max_tokens_per_argument: 400
+      
+    synthesis:
+      duration: 480  # 8 minutes
+      parallel: false
+      participants: ["maintainers"]
+      
+  consensus:
+    strong_threshold: 0.80
+    normal_threshold: 0.65
+    escalation_threshold: 0.50
+    
+  token_budgets:
+    total_per_debate: 15000
+    per_stakeholder: 1500
+    per_maintainer: 2000
+    emergency_reserve: 3000
+    
+# Performance optimization
+optimization:
+  cache:
+    analysis_results: 3600  # 1 hour
+    agent_decisions: 1800   # 30 minutes
+    
+  batching:
+    max_concurrent_stakeholders: 5
+    max_concurrent_analyses: 3
+    
+  circuit_breaker:
+    failure_threshold: 3
+    timeout: 60
+    reset_after: 300
+    
+# Monitoring configuration  
+monitoring:
+  metrics:
+    - debate_duration
+    - token_usage
+    - consensus_rate
+    - decision_quality
+    - agent_performance
+    
+  alerts:
+    high_token_usage:
+      threshold: 20000
+      window: 3600
+      
+    low_consensus:
+      threshold: 0.40
+      consecutive: 3
+      
+    agent_failure:
+      threshold: 5
+      window: 1800

@@ -1,0 +1,143 @@
+# OpenTelemetry Collector Configuration for Multi-Agent Debate System
+
+receivers:
+  # Receive metrics and traces from agents
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        
+  # Scrape Prometheus metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'debate-metrics'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['localhost:9090']
+              
+  # GitHub Actions metrics
+  github_actions:
+    collection_interval: 60s
+    initial_delay: 10s
+
+processors:
+  # Add metadata
+  resource:
+    attributes:
+      - key: service.name
+        value: multi-agent-debate
+        action: insert
+      - key: deployment.environment
+        value: ${ENVIRONMENT}
+        action: insert
+        
+  # Batch for efficiency
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+    
+  # Filter sensitive data
+  filter:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["anthropic.api_key"] != nil'
+        - 'attributes["github.token"] != nil'
+        
+  # Memory limiter
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+    
+  # Add debate-specific attributes
+  attributes:
+    actions:
+      - key: debate.pr_number
+        from_attribute: github.pr_number
+        action: insert
+      - key: debate.agent_name
+        from_attribute: agent.name
+        action: insert
+      - key: debate.phase
+        from_attribute: debate.current_phase
+        action: insert
+
+exporters:
+  # Console output for debugging
+  logging:
+    loglevel: info
+    
+  # Prometheus for metrics
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: debate
+    const_labels:
+      system: multi_agent_debate
+      
+  # CloudWatch for production
+  awscloudwatch:
+    namespace: MultiAgentDebate
+    region: ${AWS_REGION}
+    dimension_rollup_option: NoDimensionRollup
+    metric_declarations:
+      - dimensions: [[agent_name], [debate_phase], [agent_name, debate_phase]]
+        metric_name_selectors:
+          - debate_duration_seconds
+          - token_usage_total
+          - consensus_score
+          - agent_response_time_seconds
+          
+  # S3 for long-term storage
+  awss3:
+    s3_bucket: ${S3_BUCKET}
+    s3_prefix: debate-metrics
+    s3_partition: minute
+    compression: gzip
+    
+  # OTLP for external consumers
+  otlp/external:
+    endpoint: ${EXTERNAL_OTLP_ENDPOINT}
+    headers:
+      api-key: ${EXTERNAL_API_KEY}
+
+service:
+  pipelines:
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, resource, batch, attributes]
+      exporters: [prometheus, awscloudwatch, logging]
+      
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, filter, batch, attributes]
+      exporters: [otlp/external, logging]
+      
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, filter, batch]
+      exporters: [awss3, logging]
+      
+  extensions: [health_check, pprof, zpages]
+  
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+# Telemetry for the collector itself
+telemetry:
+  logs:
+    level: info
+  metrics:
+    level: detailed
+    address: 0.0.0.0:8888
