@@ -10,6 +10,14 @@ on:
         description: 'PR number to analyze'
         required: true
         type: number
+      owner:
+        description: 'The owner of the repository to analyze (e.g., "casepot")'
+        required: false
+        default: ''
+      repo:
+        description: 'The name of the repository to analyze (e.g., "agent-test-calculator")'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -25,6 +33,8 @@ jobs:
       should_debate: ${{ steps.check.outputs.should_debate }}
       pr_number: ${{ steps.check.outputs.pr_number }}
       debate_id: ${{ steps.check.outputs.debate_id }}
+      owner: ${{ steps.check.outputs.owner }}
+      repo: ${{ steps.check.outputs.repo }}
     steps:
       - name: Check trigger conditions
         id: check
@@ -34,13 +44,20 @@ jobs:
             const context = github.context;
             let shouldDebate = false;
             let prNumber = null;
-            
+            let owner = context.repo.owner;
+            let repo = context.repo.repo;
+
             // Check for manual workflow dispatch
             if (context.eventName === 'workflow_dispatch') {
               shouldDebate = true;
               prNumber = context.payload.inputs.pr_number;
+              // If owner/repo are provided in dispatch, use them.
+              if (context.payload.inputs.owner && context.payload.inputs.repo) {
+                owner = context.payload.inputs.owner;
+                repo = context.payload.inputs.repo;
+              }
             }
-            // Check for PR events
+            // Check for PR events (always in current repo)
             else if (context.eventName === 'pull_request') {
               prNumber = context.payload.pull_request.number;
               
@@ -52,8 +69,8 @@ jobs:
               
               // Auto-trigger for large changes
               const { data: pr } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner: owner,
+                repo: repo,
                 pull_number: prNumber
               });
               
@@ -62,7 +79,7 @@ jobs:
                 shouldDebate = true;
               }
             }
-            // Check for comment trigger
+            // Check for comment trigger (always in current repo)
             else if (context.eventName === 'issue_comment') {
               const comment = context.payload.comment.body;
               if (comment.startsWith('/debate')) {
@@ -77,6 +94,8 @@ jobs:
             core.setOutput('should_debate', shouldDebate);
             core.setOutput('pr_number', prNumber);
             core.setOutput('debate_id', debateId);
+            core.setOutput('owner', owner);
+            core.setOutput('repo', repo);
 
   prepare-context:
     name: Prepare Debate Context
@@ -86,6 +105,7 @@ jobs:
     outputs:
       context: ${{ steps.build.outputs.context }}
       participants: ${{ steps.identify.outputs.participants }}
+      head_sha: ${{ steps.build.outputs.head_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,15 +115,16 @@ jobs:
         id: build
         run: |
           PR_NUMBER=${{ needs.check-trigger.outputs.pr_number }}
+          REPO_FLAG="-R ${{ needs.check-trigger.outputs.owner }}/${{ needs.check-trigger.outputs.repo }}"
           
           # Get PR diff
-          gh pr diff $PR_NUMBER > /tmp/pr.diff
+          gh pr diff $PR_NUMBER $REPO_FLAG > /tmp/pr.diff
           
           # Get PR metadata
-          gh pr view $PR_NUMBER --json title,body,author,labels,files > /tmp/pr-meta.json
+          gh pr view $PR_NUMBER --json title,body,author,labels,files,headRefOid $REPO_FLAG > /tmp/pr-meta.json
           
           # Get recent commit messages
-          gh pr view $PR_NUMBER --json commits --jq '.commits[-5:][].commit.message' > /tmp/commits.txt
+          gh pr view $PR_NUMBER --json commits --jq '.commits[-5:][].commit.message' $REPO_FLAG > /tmp/commits.txt
           
           # Build context file
           cat > /tmp/context.md << 'EOF'
@@ -126,6 +147,10 @@ jobs:
           echo "context<<EOF" >> $GITHUB_OUTPUT
           cat /tmp/context.md >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Output head SHA
+          HEAD_SHA=$(cat /tmp/pr-meta.json | jq -r '.headRefOid')
+          echo "head_sha=$HEAD_SHA" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
@@ -133,7 +158,7 @@ jobs:
         id: identify
         run: |
           # Analyze changed files to determine which agents should participate
-          CHANGED_FILES=$(gh pr view ${{ needs.check-trigger.outputs.pr_number }} --json files --jq '.files[].path')
+          CHANGED_FILES=$(gh pr view ${{ needs.check-trigger.outputs.pr_number }} --json files --jq '.files[].path' -R ${{ needs.check-trigger.outputs.owner }}/${{ needs.check-trigger.outputs.repo }})
           
           # Default stakeholders
           STAKEHOLDERS='["security_analyst", "performance_analyst", "testing_advocate"]'
@@ -196,8 +221,8 @@ jobs:
             const debateId = '${{ needs.check-trigger.outputs.debate_id }}';
             
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: '${{ needs.check-trigger.outputs.owner }}',
+              repo: '${{ needs.check-trigger.outputs.repo }}',
               issue_number: ${{ needs.check-trigger.outputs.pr_number }},
               body: `## 🤖 ${stakeholder} Analysis\n\n_Debate ID: ${debateId}_\n\n${analysis}`
             });
@@ -219,8 +244,8 @@ jobs:
             
             // Get all comments from this debate
             const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: '${{ needs.check-trigger.outputs.owner }}',
+              repo: '${{ needs.check-trigger.outputs.repo }}',
               issue_number: prNumber
             });
             
@@ -279,7 +304,7 @@ jobs:
 
   consensus-decision:
     name: Consensus Decision
-    needs: [check-trigger, maintainer-deliberation]
+    needs: [check-trigger, prepare-context, maintainer-deliberation]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -364,17 +389,17 @@ jobs:
             The multi-agent review has completed. Please review the feedback above and make necessary adjustments.`;
             
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: '${{ needs.check-trigger.outputs.owner }}',
+              repo: '${{ needs.check-trigger.outputs.repo }}',
               issue_number: ${{ needs.check-trigger.outputs.pr_number }},
               body: body
             });
             
             // Update PR status check
             await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: context.payload.pull_request.head.sha,
+              owner: '${{ needs.check-trigger.outputs.owner }}',
+              repo: '${{ needs.check-trigger.outputs.repo }}',
+              sha: '${{ needs.prepare-context.outputs.head_sha }}',
               state: status,
               context: 'agent-debate',
               description: `Consensus: ${score}% - ${decision}`
