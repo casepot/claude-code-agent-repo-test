@@ -163,26 +163,28 @@ jobs:
           STAKEHOLDERS='["security_analyst", "performance_analyst", "testing_advocate"]'
           
           # Add specialized stakeholders based on changes
-          if echo "$CHANGED_FILES" | grep -E '\.(md|txt|rst)$'; then
-            STAKEHOLDERS=$(echo $STAKEHOLDERS | jq '. + ["documentation"]')
+          if echo "$CHANGED_FILES" | grep -qE '\.(md|txt|rst)$'; then
+            STAKEHOLDERS=$(echo "$STAKEHOLDERS" | jq -c '. + ["documentation"]')
           fi
           
-          if echo "$CHANGED_FILES" | grep -E 'api/|interface/'; then
-            STAKEHOLDERS=$(echo $STAKEHOLDERS | jq '. + ["ux", "compatibility"]')
+          if echo "$CHANGED_FILES" | grep -qE 'api/|interface/'; then
+            STAKEHOLDERS=$(echo "$STAKEHOLDERS" | jq -c '. + ["ux", "compatibility"]')
           fi
           
           # Identify relevant maintainers
           MAINTAINERS='["architecture", "quality"]'
           
-          if echo "$CHANGED_FILES" | grep -E 'auth|security|crypto'; then
-            MAINTAINERS=$(echo $MAINTAINERS | jq '. + ["security"]')
+          if echo "$CHANGED_FILES" | grep -qE 'auth|security|crypto'; then
+            MAINTAINERS=$(echo "$MAINTAINERS" | jq -c '. + ["security"]')
           fi
           
-          if echo "$CHANGED_FILES" | grep -E 'perf|benchmark|optimize'; then
-            MAINTAINERS=$(echo $MAINTAINERS | jq '. + ["performance"]')
+          if echo "$CHANGED_FILES" | grep -qE 'perf|benchmark|optimize'; then
+            MAINTAINERS=$(echo "$MAINTAINERS" | jq -c '. + ["performance"]')
           fi
           
-          echo "participants={\"stakeholders\": $STAKEHOLDERS, \"maintainers\": $MAINTAINERS}" >> $GITHUB_OUTPUT
+          # Ensure the final JSON is a compact, single line
+          PARTICIPANTS_JSON="{\"stakeholders\": $STAKEHOLDERS, \"maintainers\": $MAINTAINERS}"
+          echo "participants=$PARTICIPANTS_JSON" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
