@@ -205,12 +205,6 @@ jobs:
         uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            You are analyzing PR #${{ needs.check-trigger.outputs.pr_number }} as the ${{ matrix.stakeholder }} stakeholder.
-            
-            ${{ needs.prepare-context.outputs.context }}
-            
-            Provide your analysis following your role's guidelines.
           prompt_file: .github/claude/prompts/stakeholders/${{ matrix.stakeholder }}.md
           max_turns: "1"
           
@@ -282,16 +276,6 @@ jobs:
         uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            You are reviewing PR #${{ needs.check-trigger.outputs.pr_number }} as the ${{ matrix.maintainer }} maintainer.
-            
-            ## Original Context
-            ${{ needs.prepare-context.outputs.context }}
-            
-            ## Stakeholder Arguments
-            ${{ needs.collect-arguments.outputs.arguments_summary }}
-            
-            Synthesize the stakeholder feedback and provide your maintainer perspective.
           prompt_file: .github/claude/prompts/maintainers/${{ matrix.maintainer }}.md
           max_turns: "1"
           
