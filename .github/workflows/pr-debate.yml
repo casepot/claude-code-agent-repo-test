@@ -1,9 +1,5 @@
 name: Multi-Agent PR Debate
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-  issue_comment:
-    types: [created]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -12,12 +8,10 @@ on:
         type: number
       owner:
         description: 'The owner of the repository to analyze (e.g., "casepot")'
-        required: false
-        default: ''
+        required: true
       repo:
         description: 'The name of the repository to analyze (e.g., "agent-test-calculator")'
-        required: false
-        default: ''
+        required: true
 
 permissions:
   contents: read
@@ -41,61 +35,13 @@ jobs:
         id: check
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.EXTERNAL_REPO_PAT }}
           script: |
-            let shouldDebate = false;
-            let prNumber = null;
-            let owner = context.repo.owner;
-            let repo = context.repo.repo;
-
-            // Check for manual workflow dispatch
-            if (context.eventName === 'workflow_dispatch') {
-              shouldDebate = true;
-              prNumber = context.payload.inputs.pr_number;
-              // If owner/repo are provided in dispatch, use them.
-              if (context.payload.inputs.owner && context.payload.inputs.repo) {
-                owner = context.payload.inputs.owner;
-                repo = context.payload.inputs.repo;
-              }
-            }
-            // Check for PR events (always in current repo)
-            else if (context.eventName === 'pull_request') {
-              prNumber = context.payload.pull_request.number;
-              
-              // Check if labeled with 'needs-debate'
-              const labels = context.payload.pull_request.labels || [];
-              if (labels.some(l => l.name === 'needs-debate')) {
-                shouldDebate = true;
-              }
-              
-              // Auto-trigger for large changes
-              const { data: pr } = await github.rest.pulls.get({
-                owner: owner,
-                repo: repo,
-                pull_number: prNumber
-              });
-              
-              if (pr.additions + pr.deletions > 500) {
-                console.log('Large PR detected, triggering debate');
-                shouldDebate = true;
-              }
-            }
-            // Check for comment trigger (always in current repo)
-            else if (context.eventName === 'issue_comment') {
-              const comment = context.payload.comment.body;
-              if (comment.startsWith('/debate')) {
-                shouldDebate = true;
-                prNumber = context.payload.issue.number;
-              }
-            }
-            
-            // Generate debate ID
-            const debateId = shouldDebate ? `debate-${prNumber}-${Date.now()}` : '';
-            
-            core.setOutput('should_debate', shouldDebate);
-            core.setOutput('pr_number', prNumber);
-            core.setOutput('debate_id', debateId);
-            core.setOutput('owner', owner);
-            core.setOutput('repo', repo);
+            core.setOutput('should_debate', true);
+            core.setOutput('pr_number', '${{ github.event.inputs.pr_number }}');
+            core.setOutput('debate_id', `debate-${{ github.event.inputs.pr_number }}-${Date.now()}`);
+            core.setOutput('owner', '${{ github.event.inputs.owner }}');
+            core.setOutput('repo', '${{ github.event.inputs.repo }}');
 
   prepare-context:
     name: Prepare Debate Context
@@ -109,22 +55,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: '${{ needs.check-trigger.outputs.owner }}/${{ needs.check-trigger.outputs.repo }}'
+          ref: 'refs/pull/${{ needs.check-trigger.outputs.pr_number }}/head'
+          token: ${{ secrets.EXTERNAL_REPO_PAT }}
           fetch-depth: 0
           
       - name: Build context
         id: build
+        env:
+          GH_TOKEN: ${{ secrets.EXTERNAL_REPO_PAT }}
         run: |
           PR_NUMBER=${{ needs.check-trigger.outputs.pr_number }}
           REPO_FLAG="-R ${{ needs.check-trigger.outputs.owner }}/${{ needs.check-trigger.outputs.repo }}"
           
           # Get PR diff
-          gh pr diff $PR_NUMBER $REPO_FLAG > /tmp/pr.diff
+          git diff HEAD^1 > /tmp/pr.diff
           
           # Get PR metadata
           gh pr view $PR_NUMBER --json title,body,author,labels,files,headRefOid $REPO_FLAG > /tmp/pr-meta.json
           
           # Get recent commit messages
-          gh pr view $PR_NUMBER --json commits --jq '.commits[-5:][].commit.message' $REPO_FLAG > /tmp/commits.txt
+          git log -n 5 --pretty=format:%s > /tmp/commits.txt
           
           # Build context file
           cat > /tmp/context.md << 'EOF'
@@ -151,43 +102,11 @@ jobs:
           # Output head SHA
           HEAD_SHA=$(cat /tmp/pr-meta.json | jq -r '.headRefOid')
           echo "head_sha=$HEAD_SHA" >> $GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Identify participants
         id: identify
         run: |
-          # Analyze changed files to determine which agents should participate
-          CHANGED_FILES=$(gh pr view ${{ needs.check-trigger.outputs.pr_number }} --json files --jq '.files[].path' -R ${{ needs.check-trigger.outputs.owner }}/${{ needs.check-trigger.outputs.repo }})
-          
-          # Default stakeholders
-          STAKEHOLDERS='["security_analyst", "performance_analyst", "testing_advocate"]'
-          
-          # Add specialized stakeholders based on changes
-          if echo "$CHANGED_FILES" | grep -qE '\.(md|txt|rst)$'; then
-            STAKEHOLDERS=$(echo "$STAKEHOLDERS" | jq -c '. + ["documentation"]')
-          fi
-          
-          if echo "$CHANGED_FILES" | grep -qE 'api/|interface/'; then
-            STAKEHOLDERS=$(echo "$STAKEHOLDERS" | jq -c '. + ["ux", "compatibility"]')
-          fi
-          
-          # Identify relevant maintainers
-          MAINTAINERS='["architecture", "quality"]'
-          
-          if echo "$CHANGED_FILES" | grep -qE 'auth|security|crypto'; then
-            MAINTAINERS=$(echo "$MAINTAINERS" | jq -c '. + ["security"]')
-          fi
-          
-          if echo "$CHANGED_FILES" | grep -qE 'perf|benchmark|optimize'; then
-            MAINTAINERS=$(echo "$MAINTAINERS" | jq -c '. + ["performance"]')
-          fi
-          
-          # Ensure the final JSON is a compact, single line
-          PARTICIPANTS_JSON="{\"stakeholders\": $STAKEHOLDERS, \"maintainers\": $MAINTAINERS}"
-          echo "participants=$PARTICIPANTS_JSON" >> $GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo 'participants={"stakeholders": ["security_analyst"], "maintainers": ["quality"]}' >> $GITHUB_OUTPUT
 
   stakeholder-analysis:
     name: Stakeholder Analysis
@@ -200,13 +119,32 @@ jobs:
       max-parallel: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.EXTERNAL_REPO_PAT }}
       
+      - name: Prepare stakeholder prompt
+        id: prep_prompt
+        run: |
+          CONTEXT_FILE=/tmp/context.md
+          echo "${{ needs.prepare-context.outputs.context }}" > $CONTEXT_FILE
+          
+          PROMPT_TEMPLATE_FILE=.github/claude/prompts/stakeholders/${{ matrix.stakeholder }}.md
+          
+          FINAL_PROMPT_FILE=/tmp/final-prompt-${{ matrix.stakeholder }}.md
+          
+          cat $PROMPT_TEMPLATE_FILE > $FINAL_PROMPT_FILE
+          echo "\n\n---\n\n" >> $FINAL_PROMPT_FILE
+          echo "**PR CONTEXT:**" >> $FINAL_PROMPT_FILE
+          cat $CONTEXT_FILE >> $FINAL_PROMPT_FILE
+          
+          echo "prompt_path=$FINAL_PROMPT_FILE" >> $GITHUB_OUTPUT
+
       - name: Run stakeholder analysis
         id: analysis
         uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt_file: .github/claude/prompts/stakeholders/${{ matrix.stakeholder }}.md
+          prompt_file: ${{ steps.prep_prompt.outputs.prompt_path }}
           max_turns: "1"
           
       - name: Post stakeholder comment
@@ -217,13 +155,8 @@ jobs:
             const fs = require('fs');
             const executionFile = '${{ steps.analysis.outputs.execution_file }}';
             const executionLog = JSON.parse(fs.readFileSync(executionFile, 'utf8'));
-            let analysis = '';
-            for (let i = executionLog.length - 1; i >= 0; i--) {
-              if (executionLog[i].role === 'assistant') {
-                analysis = executionLog[i].content;
-                break;
-              }
-            }
+            // The actual analysis is in the 'result' field of the last log entry
+            const analysis = executionLog[executionLog.length - 1].result || "No analysis provided.";
             const stakeholder = '${{ matrix.stakeholder }}';
             const debateId = '${{ needs.check-trigger.outputs.debate_id }}';
             
@@ -246,6 +179,7 @@ jobs:
         id: collect
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = ${{ needs.check-trigger.outputs.pr_number }};
             const debateId = '${{ needs.check-trigger.outputs.debate_id }}';
@@ -258,8 +192,8 @@ jobs:
             });
             
             // Filter for stakeholder comments from this debate
-            const stakeholderComments = comments.filter(c => 
-              c.body.includes(debateId) && 
+            const stakeholderComments = comments.filter(c =>
+              c.body.includes(debateId) &&
               c.body.includes('🤖') &&
               c.body.includes('Analysis')
             );
@@ -282,23 +216,52 @@ jobs:
         maintainer: ${{ fromJSON(needs.prepare-context.outputs.participants).maintainers }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 'refs/pull/${{ needs.check-trigger.outputs.pr_number }}/head'
+          repository: '${{ needs.check-trigger.outputs.owner }}/${{ needs.check-trigger.outputs.repo }}'
+          token: ${{ secrets.EXTERNAL_REPO_PAT }}
       
+      - name: Prepare maintainer prompt
+        id: prep_prompt
+        run: |
+          CONTEXT_FILE=/tmp/context.md
+          echo "${{ needs.prepare-context.outputs.context }}" > $CONTEXT_FILE
+          
+          ARGUMENTS_FILE=/tmp/arguments.md
+          echo "${{ needs.collect-arguments.outputs.arguments_summary }}" > $ARGUMENTS_FILE
+          
+          PROMPT_TEMPLATE_FILE=.github/claude/prompts/maintainers/${{ matrix.maintainer }}.md
+          
+          FINAL_PROMPT_FILE=/tmp/final-prompt-${{ matrix.maintainer }}.md
+          
+          cat $PROMPT_TEMPLATE_FILE > $FINAL_PROMPT_FILE
+          echo "\n\n---\n\n" >> $FINAL_PROMPT_FILE
+          echo "**STAKEHOLDER ARGUMENTS:**" >> $FINAL_PROMPT_FILE
+          cat $ARGUMENTS_FILE >> $FINAL_PROMPT_FILE
+          echo "\n\n---\n\n" >> $FINAL_PROMPT_FILE
+          echo "**PR CONTEXT:**" >> $FINAL_PROMPT_FILE
+          cat $CONTEXT_FILE >> $FINAL_PROMPT_FILE
+          
+          echo "prompt_path=$FINAL_PROMPT_FILE" >> $GITHUB_OUTPUT
+
       - name: Run maintainer review
+        id: review
         uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt_file: .github/claude/prompts/maintainers/${{ matrix.maintainer }}.md
+          prompt_file: ${{ steps.prep_prompt.outputs.prompt_path }}
           max_turns: "1"
           
       - name: Save maintainer decision
         run: |
-          echo "$CLAUDE_OUTPUT" > /tmp/maintainer-${{ matrix.maintainer }}.md
+          mkdir -p /tmp/decisions
+          echo "${{ steps.review.outputs.result }}" > /tmp/decisions/maintainer-${{ matrix.maintainer }}.md
           
       - name: Upload decision artifact
         uses: actions/upload-artifact@v4
         with:
           name: maintainer-decision-${{ matrix.maintainer }}
-          path: /tmp/maintainer-${{ matrix.maintainer }}.md
+          path: /tmp/decisions/maintainer-${{ matrix.maintainer }}.md
 
   consensus-decision:
     name: Consensus Decision
@@ -307,6 +270,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.EXTERNAL_REPO_PAT }}
       
       - name: Download all maintainer decisions
         uses: actions/download-artifact@v4
@@ -356,6 +321,7 @@ jobs:
       - name: Post final decision
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const decision = '${{ steps.consensus.outputs.decision }}';
             const score = '${{ steps.consensus.outputs.consensus_score }}';
